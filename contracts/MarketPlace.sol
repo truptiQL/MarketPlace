@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "hardhat/console.sol";
+import "./token20.sol";
+import "./nft1155.sol";
+import "./nft721.sol";
 
 contract MarketPlace {
     struct TokenDetails {
@@ -20,6 +24,8 @@ contract MarketPlace {
     mapping(uint256 => bool) private isRegistered;
     mapping(uint256 => TokenDetails) private registeredToken;
     mapping(uint256 => address) registeredTokenOwner;
+    uint256 public balance;
+    address public immutable marketplace = address(this);
 
     TokenDetails private tokenDetail;
 
@@ -27,6 +33,7 @@ contract MarketPlace {
     event buyToken(uint256 _tokenId, address buyer);
 
     /// It is for ERC1155 token
+
     function registerERC1155Token(
         address _addOf1155Contract,
         uint256 _tokenId,
@@ -35,11 +42,12 @@ contract MarketPlace {
         address _addOfERC20,
         string calldata _payment
     ) public returns (bool) {
-        IERC1155 token1155 = IERC1155(tokenDetail.addOfContract);
-        require(
-            token1155.balanceOf(_addOf1155Contract, _tokenId) >= _noOfAsset,
-            "Not having required number of assets"
-        );
+        nft1155 token1155 = nft1155(_addOf1155Contract);
+        tokenDetail.tokenId = _tokenId;
+        balance = token1155.balanceOf(msg.sender, _tokenId);
+
+        require(balance >= _noOfAsset, "Not having required number of assets");
+
         tokenDetail.addOfContract = _addOf1155Contract;
         tokenDetail.tokenId = _tokenId;
         tokenDetail.noOfAssets = _noOfAsset;
@@ -52,31 +60,26 @@ contract MarketPlace {
 
         isRegistered[_tokenId] = true;
 
-        token1155.setApprovalForAll(address(this), true);
-
         registeredToken[_tokenId] = tokenDetail;
 
         emit TokenRegistered(_tokenId, _addOf1155Contract);
         return true;
     }
 
+    /// for 721 token
     function registerERC721Token(
-        address _addOfContract,
+        address _addOf721Contract,
         uint256 _tokenId,
-        uint256 _noOfAsset,
         uint256 _price,
         address _addOfERC20,
         string calldata _payment
     ) public returns (bool) {
-        IERC721 token721 = IERC721(tokenDetail.addOfContract);
-        require(
-            token721.balanceOf(_addOfContract) >= _noOfAsset,
-            "Not having required number of assets"
-        );
+        nft721 token721 = nft721(_addOf721Contract);
+        require(token721.ownerOf(_tokenId) == msg.sender);
 
-        tokenDetail.addOfContract = _addOfContract;
+        tokenDetail.addOfContract = _addOf721Contract;
         tokenDetail.tokenId = _tokenId;
-        tokenDetail.noOfAssets = _noOfAsset;
+        tokenDetail.noOfAssets = 1;
         tokenDetail.price = _price;
         tokenDetail.addOfERC20 = _addOfERC20;
         tokenDetail.isERC1155 = false;
@@ -87,57 +90,64 @@ contract MarketPlace {
 
         isRegistered[_tokenId] = true;
 
-        token721.approve(address(this), _tokenId);
+        // token721.approve(address(this), _tokenId);
         registeredToken[_tokenId] = tokenDetail;
 
         emit TokenRegistered(_tokenId, msg.sender);
         return true;
     }
 
-    // @params
     ///  payToken address of token from which payment will be done
-    ///  _tokenid  which specific token buyer wants to buy
-    ///  _noOfTokens  How many number of token buyer want to buy
-    ///  _price  How much price buyer is ready to give for all tokens he wants to buy
+    /// @param _token20 using which erc20 token user want to buy
+    /// @param _tokenid  which specific token buyer wants to buy
+    /// @param _price  How much price buyer is ready to give for all tokens he wants to buy
+    /// @param  _noOfAssets Number of tokens to be purchased
     function buy(
         address _token20,
         uint256 _tokenid,
         uint256 _noOfAssets,
         uint256 _price
-    ) public payable {
+    ) public payable returns (bool) {
         require(isRegistered[_tokenid], "token is not registered");
         require(_noOfAssets <= registeredToken[_tokenid].noOfAssets);
-        uint256 pricePerToken = _noOfAssets / _price;
+        uint256 pricePerToken = _price / _noOfAssets;
         require(
-            registeredToken[_tokenid].price == pricePerToken,
+            registeredToken[_tokenid].price <= pricePerToken,
             "Not a acceptable price"
         );
 
-        IERC20 token20;
+        token20 Token20;
         if (_token20 != address(0)) {
-            token20 = IERC20(_token20);
+            Token20 = token20(_token20);
+            require(
+                _token20 == registeredToken[_tokenid].addOfERC20,
+                "Different address"
+            );
         } else {
             // Mumbai WETH address
-            token20 = IERC20(0xA6FA4fB5f76172d178d61B04b0ecd319C5d1C0aa);
+            Token20 = token20(0xA6FA4fB5f76172d178d61B04b0ecd319C5d1C0aa);
         }
-        token20.approve(address(this), _price);
+        address seller = registeredToken[_tokenid].owner;
 
         if (registeredToken[_tokenid].isERC1155) {
-            address seller = registeredToken[_tokenid].addOfContract;
-            IERC1155 sellerToken = IERC1155(seller);
-            sellerToken.safeTransferFrom(
+            nft1155 sellerToken = nft1155(
+                registeredToken[_tokenid].addOfContract
+            );
+
+            sellerToken.SafeTransferFrom(
                 seller,
                 msg.sender,
                 _tokenid,
                 _noOfAssets,
                 ""
             );
-            token20.transferFrom(msg.sender, seller, _price);
         } else {
-            address seller = registeredToken[_tokenid].owner;
-            IERC721 sellerToken = IERC721(seller);
+            nft721 sellerToken = nft721(
+                registeredToken[_tokenid].addOfContract
+            );
             sellerToken.safeTransferFrom(seller, msg.sender, _tokenid);
         }
+        Token20.TransferFrom(msg.sender, seller, _price);
 
         if (registeredToken[_tokenid].noOfAssets - _noOfAssets == 0) {
             isRegistered[_tokenid] = false;
@@ -145,10 +155,7 @@ contract MarketPlace {
             registeredToken[_tokenid].noOfAssets -= _noOfAssets;
         }
 
-        // A fee of 0.55% will be reserved for the marketplace owner which he can withdraw later
-        uint256 fee = (_price * uint256(11)) / uint256(20);
-        token20.approve(address(this), fee);
-
         emit buyToken(_tokenid, msg.sender);
+        return true;
     }
 }
